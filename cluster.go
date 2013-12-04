@@ -5,6 +5,7 @@
 package gocql
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -52,13 +53,20 @@ func NewCluster(hosts ...string) *ClusterConfig {
 
 // CreateSession initializes the cluster based on this config and returns a
 // session object that can be used to interact with the database.
-func (cfg *ClusterConfig) CreateSession() *Session {
+func (cfg *ClusterConfig) CreateSession() (*Session, error) {
+
+	//Check that hosts in the ClusterConfig is not empty
+	if len(cfg.Hosts) < 1 {
+		return nil, ErrNoHosts
+	}
+
 	impl := &clusterImpl{
 		cfg:      *cfg,
 		hostPool: NewRoundRobin(),
 		connPool: make(map[string]*RoundRobin),
 		conns:    make(map[*Conn]struct{}),
 		quitWait: make(chan bool),
+		keyspace: cfg.Keyspace,
 	}
 	impl.wgStart.Add(1)
 	for i := 0; i < len(impl.cfg.Hosts); i++ {
@@ -71,7 +79,9 @@ func (cfg *ClusterConfig) CreateSession() *Session {
 		}
 	}
 	impl.wgStart.Wait()
-	return NewSession(impl)
+	s := NewSession(impl)
+	s.SetConsistency(cfg.Consistency)
+	return s, nil
 }
 
 type clusterImpl struct {
@@ -179,7 +189,9 @@ func (c *clusterImpl) HandleError(conn *Conn, err error, closed bool) {
 		return
 	}
 	c.removeConn(conn)
-	go c.connect(conn.Address()) // reconnect
+	if !c.quit {
+		go c.connect(conn.Address()) // reconnect
+	}
 }
 
 func (c *clusterImpl) HandleKeyspace(conn *Conn, keyspace string) {
@@ -219,3 +231,7 @@ func (c *clusterImpl) Close() {
 		}
 	})
 }
+
+var (
+	ErrNoHosts = errors.New("no hosts provided")
+)
